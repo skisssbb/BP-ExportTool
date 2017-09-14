@@ -1,4 +1,4 @@
-package bp.server.service;
+package bp17.jerseyserver.service;
 
 import org.hibernate.SessionFactory;
 import org.hibernate.boot.Metadata;

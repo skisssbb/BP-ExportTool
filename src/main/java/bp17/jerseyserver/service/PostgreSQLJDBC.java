@@ -1,4 +1,4 @@
-package bp.server.service;
+package bp17.jerseyserver.service;
 
 import java.sql.Connection;
 import java.sql.DriverManager;

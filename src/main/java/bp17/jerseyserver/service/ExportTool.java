@@ -1,9 +1,9 @@
-package bp.server.service;
+package bp17.jerseyserver.service;
 
 import bp.common.model.obstacles.*;
 import bp.common.model.ways.Node;
 import bp.common.model.ways.Way;
-import bp.server.exceptions.SequenceIDNotFoundException;
+import bp17.jerseyserver.exceptions.SequenceIDNotFoundException;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
 import org.hibernate.boot.jaxb.SourceType;
@@ -83,6 +83,27 @@ public class ExportTool {
     }
 
     /**
+     * return a list of retrieved data in form of a list of Objects
+     * @param typeParameterClass
+     * @param <T>
+     * @return
+     */
+    public static <T> List<T> getDataAsList(Class<T> typeParameterClass){
+        // Session Factory is created only once in the life span of the application. Get it from the Singleton
+        SessionFactory sessionFactory = DatabaseSessionManager.instance().getSessionFactory();
+
+        Session session = sessionFactory.openSession();
+
+        CriteriaBuilder builder = session.getCriteriaBuilder();
+        CriteriaQuery<T> criteria = builder.createQuery(typeParameterClass);
+        Root<T> root = criteria.from(typeParameterClass);
+        criteria.select(root);
+        List<T> datalist = session.createQuery(criteria).getResultList();
+        session.close();
+        return datalist;
+    }
+
+    /**
      * the first method from Exporttool to be executed
      */
     public void startExportProcess(){
@@ -155,7 +176,7 @@ public class ExportTool {
      * @return a linked list of all Obstacle from hibernatedb
      */
     private List<Obstacle> getAllObstacles(){
-        List<Obstacle> datalist = BarriersService.getDataAsList(Obstacle.class);
+        List<Obstacle> datalist = ExportTool.getDataAsList(Obstacle.class);
 
         //TODO remove println
         System.out.println("Number of Obstacles before check:"+datalist.size());
@@ -351,7 +372,7 @@ public class ExportTool {
     }
 
     private List<Way> getAllWays() {
-        List<Way> datalist = BarriersService.getDataAsList(Way.class);
+        List<Way> datalist = ExportTool.getDataAsList(Way.class);
 
         //TODO remove println
         System.out.println("Number of Ways before check:"+datalist.size());
@@ -543,6 +564,7 @@ public class ExportTool {
         try {
             c.close();
             hibernate_con.close();
+            DatabaseSessionManager.instance().getSessionFactory().close();
         } catch (SQLException e) {
             e.printStackTrace();
         }
