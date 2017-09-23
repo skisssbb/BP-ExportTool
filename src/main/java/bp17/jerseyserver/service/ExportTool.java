@@ -114,13 +114,79 @@ public class ExportTool {
 
     /**
      * write all the Obstacle Objects retrieved from hibernatedb in osm DB
+     * at first write all One Node Obstacle
+     * then all the 2 nodes Obstacles
      */
     private void writeObstaclesInOsmDatabase(){
         //TODO check if insert Obstacle working, not tested yet after small changes
         List<Obstacle> obstacleList = getAllObstacles();
         if(obstacleList.isEmpty()) return;
-        System.out.println("Number of Obstacles: " + obstacleList.size());
+        System.out.println("Number of Obstacles to update: " + obstacleList.size());
         updateIdsAllObstacles(obstacleList);
+        List<Obstacle> oneNodeObstacleList = new ArrayList<Obstacle>();
+        List<Obstacle> twoNodesObstacleList = new ArrayList<Obstacle>();
+        for(Obstacle o:obstacleList){
+            if(o.getLatitudeEnd() == 0 || o.getLongitudeEnd() == 0) oneNodeObstacleList.add(o);
+            else twoNodesObstacleList.add(o);
+        }
+        // Its important to write OneNodeObstacle first
+        writeOneNodeObstaclesInOsmDatabase(oneNodeObstacleList);
+        writeTwoNodeObstaclesInOsmDatabase(twoNodesObstacleList);
+    }
+
+
+    /**
+     * @return a linked list of all Obstacle from hibernatedb
+     */
+    private List<Obstacle> getAllObstacles(){
+        List<Obstacle> datalist = ExportTool.getDataAsList(Obstacle.class);
+
+        //TODO remove println
+        System.out.println("Number of Obstacles before check:"+datalist.size());
+        Iterator<Obstacle> iter = datalist.iterator();
+        while(iter.hasNext()){
+            Obstacle o = iter.next();
+            if(o.getOsm_id_start() != 0) iter.remove();
+        }
+
+        System.out.println("Number of Obstacles after check:"+datalist.size());
+        return datalist;
+    }
+
+    /**
+     * update the right IDs for all Obstacles POJO corresponding to osm DB
+     * @param obslist list of obstacles retrieved from hibernatedb
+     */
+    private void updateIdsAllObstacles(List<Obstacle> obslist){
+        String sql_update_id = "UPDATE obstacle SET osm_id_start = ?, osm_id_end = ? WHERE id = ? ;";
+        PreparedStatement pstmt;
+        try{
+            pstmt = hibernate_con.prepareStatement(sql_update_id);
+            for(Obstacle o:obslist){
+                pstmt.setLong(1, nextPossibleNodeId);
+                o.setOsm_id_start(nextPossibleNodeId);
+                nextPossibleNodeId++;
+                if(o.getLongitudeEnd() != 0 || o.getLatitudeEnd() != 0){
+                    pstmt.setLong(2,nextPossibleNodeId);
+                    o.setOsm_id_end(nextPossibleNodeId);
+                    nextPossibleNodeId++;
+                }
+                else{
+                    pstmt.setLong(2,0);
+                    o.setOsm_id_end(0);
+                }
+                pstmt.setLong(3, o.getId());
+                pstmt.execute();
+            }
+            pstmt.close();
+            hibernate_con.commit();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        System.out.println("UPDATE OBSTACLE ID COMPLETED.");
+    }
+
+    private void writeOneNodeObstaclesInOsmDatabase(List<Obstacle> obstacleList) {
         try {
             PreparedStatement updateNodes = null;
             PreparedStatement updateWays = null;
@@ -162,56 +228,6 @@ public class ExportTool {
         } catch (SQLException e){
             e.printStackTrace();
         }
-
-        /* RECHEREEEEEEEEEEEEEEEEEEEE TODO remove
-        for(Obstacle o:obstacleList){
-            System.out.print("Class: "+o.getClass()+" ");
-            System.out.print("Obstacle Type:"+o.getTypeCode()+" ID:");
-            System.out.println(o.getId());
-        }
-        System.out.println("Next Possible ID: "+nextPossibleNodeId);*/
-    }
-
-    /**
-     * @return a linked list of all Obstacle from hibernatedb
-     */
-    private List<Obstacle> getAllObstacles(){
-        List<Obstacle> datalist = ExportTool.getDataAsList(Obstacle.class);
-
-        //TODO remove println
-        System.out.println("Number of Obstacles before check:"+datalist.size());
-        Iterator<Obstacle> iter = datalist.iterator();
-        while(iter.hasNext()){
-            Obstacle o = iter.next();
-            if(o.getOsm_id() != 0) iter.remove();
-        }
-
-        System.out.println("Number of Obstacles after check:"+datalist.size());
-        return datalist;
-    }
-
-    /**
-     * update the right IDs for all Obstacles POJO corresponding to osm DB
-     * @param obslist list of obstacles retrieved from hibernatedb
-     */
-    private void updateIdsAllObstacles(List<Obstacle> obslist){
-        String sql_update_id = "UPDATE obstacle SET osm_id = ? WHERE id = ? ;";
-        PreparedStatement pstmt;
-        try{
-            pstmt = hibernate_con.prepareStatement(sql_update_id);
-            for(Obstacle o:obslist){
-                pstmt.setLong(1, nextPossibleNodeId);
-                pstmt.setLong(2, o.getId());
-                pstmt.execute();
-                o.setOsm_id(nextPossibleNodeId);
-                this.nextPossibleNodeId++;
-            }
-            pstmt.close();
-            hibernate_con.commit();
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-        System.out.println("UPDATE OBSTACLE ID COMPLETED.");
     }
 
     /**
@@ -220,7 +236,7 @@ public class ExportTool {
      * @param pstmt a prepared statement: id, version, userID, tstamp, changesetID, tags, long and lat are to be filled in
      */
     private void insertObstacleInTableNode(Obstacle o, PreparedStatement pstmt) {
-        long id = o.getOsm_id();
+        long id = o.getOsm_id_start();
         int version = -1;
         int userID = -1;
         long changesetID = -1;
@@ -232,8 +248,8 @@ public class ExportTool {
             pstmt.setTimestamp(4, current_timestamp);
             pstmt.setLong(5, changesetID);
             pstmt.setObject(6, tags,Types.OTHER);
-            pstmt.setDouble(7, o.getLongitude());
-            pstmt.setDouble(8, o.getLatitude());
+            pstmt.setDouble(7, o.getLongitudeStart());
+            pstmt.setDouble(8, o.getLatitudeStart());
             pstmt.execute();
         } catch (SQLException e) {
             e.printStackTrace();
@@ -281,7 +297,7 @@ public class ExportTool {
         for(Long n:array){
             list_nodes.add(n);
         }
-        list_nodes.add(list_nodes.indexOf(o.getId_firstnode()) + 1, o.getOsm_id());
+        list_nodes.add(list_nodes.indexOf(o.getId_firstnode()) + 1, o.getOsm_id_start());
         return list_nodes.toArray(tmp);
     }
 
@@ -298,7 +314,7 @@ public class ExportTool {
                                       PreparedStatement insertstmt , PreparedStatement getseqstmt) {
         long sequence_id_firstNode;
         long way_id = o.getId_way();
-        long obstacle_id = o.getOsm_id();
+        long obstacle_id = o.getOsm_id_start();
         long sequence_id_obstacle;
         try {
             getseqstmt.setLong(1, o.getId_way());
@@ -330,6 +346,10 @@ public class ExportTool {
             e.printStackTrace();
         }
 
+    }
+
+    private void writeTwoNodeObstaclesInOsmDatabase(List<Obstacle> obstacleList) {
+        // TODO schreiben hier weiter
     }
 
     /**
@@ -499,21 +519,26 @@ public class ExportTool {
         HashMap<String,String> tags = new HashMap<>();
         if(ob instanceof Obstacle){
             Obstacle o = (Obstacle)ob;
+            if(o.getName() != null){
+                if(!o.getName().equals("")) tags.put("name", o.getName());
+            }
             switch (o.getTypeCode()){
                 case STAIRS:
                     Stairs stair = (Stairs)o;
-                    tags.put("barrier","stairs");
-                    tags.put("number_of_stairs",String.valueOf(stair.getNumberOfStairs()));
-                    tags.put("height_of_stair",String.valueOf(stair.getHeightOfStairs()));
-                    tags.put("handle_available",String.valueOf(stair.getHandleAvailable()));
-                    break;
-                case RAMP:
-                    Ramp ramp = (Ramp)o;
-                    tags.put("barrier","ramp");
+                    tags.put("highway","steps");
+                    if(stair.getIncline() != null) tags.put("incline",stair.getIncline());
+                    if(stair.getmNumberOfStairs() != 0) tags.put("step_count",String.valueOf(stair.getmNumberOfStairs()));
+                    if(stair.getHandrail() != null) tags.put("handrail",stair.getHandrail());
+                    if(stair.getTactile_paving() != null) tags.put("tactile_paving",stair.getTactile_paving());
+                    if(stair.getTactile_writing() != null) tags.put("tactile_writing",stair.getTactile_writing());
+                    if(stair.getRamp() != null) tags.put("ramp",stair.getRamp());
+                    if(stair.getRamp_stroller() != null) tags.put("ramp:stroller",stair.getRamp_stroller());
+                    if(stair.getRamp_wheelchair() != null) tags.put("ramp:wheelchair",stair.getRamp_wheelchair());
+                    if(stair.getWidth() != 0) tags.put("width",String.valueOf(stair.getWidth()));
                     break;
                 case UNEVENNESS:
                     Unevenness uneven = (Unevenness)o;
-                    tags.put("barrier","uneveness");
+                    tags.put("barrier","unevenness");
                     tags.put("length", String.valueOf(uneven.getLength()));
                     break;
                 case CONSTRUCTION:
@@ -571,7 +596,9 @@ public class ExportTool {
     }
 
     public static void main(String[] args) {
-        ExportTool.getInstance().startExportProcess();
-        System.out.println("DONEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE");
+        //ExportTool.getInstance().startExportProcess();
+        System.out.println("ExportTool.jar SUCCESSFUL EXECUTED");
+        Stairs a = new Stairs("Hoemland",1.21421, 2.4214241, 1.124124, 34.36343, 20, "no");
+        a.setIncline("up");
     }
 }
