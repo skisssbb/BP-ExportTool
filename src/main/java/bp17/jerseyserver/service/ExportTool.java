@@ -1,5 +1,6 @@
 package bp17.jerseyserver.service;
 
+import bp.common.model.WayBlacklist;
 import bp.common.model.obstacles.*;
 import bp.common.model.ways.Node;
 import bp.common.model.ways.Way;
@@ -122,11 +123,10 @@ public class ExportTool {
         List<Obstacle> obstacleList = getAllObstacles();
         if(obstacleList.isEmpty()) return;
         System.out.println("Number of Obstacles to update: " + obstacleList.size());
-        updateIdsAllObstacles(obstacleList);
         List<Obstacle> oneNodeObstacleList = new ArrayList<Obstacle>();
         List<Obstacle> twoNodesObstacleList = new ArrayList<Obstacle>();
         for(Obstacle o:obstacleList){
-            if(o.getLatitudeEnd() == 0 || o.getLongitudeEnd() == 0) oneNodeObstacleList.add(o);
+            if(o.getLatitudeEnd() == 0 && o.getLongitudeEnd() == 0) oneNodeObstacleList.add(o);
             else twoNodesObstacleList.add(o);
         }
         // Its important to write OneNodeObstacle first
@@ -146,44 +146,11 @@ public class ExportTool {
         Iterator<Obstacle> iter = datalist.iterator();
         while(iter.hasNext()){
             Obstacle o = iter.next();
-            if(o.getOsm_id_start() != 0) iter.remove();
+            if(o.isAlreadyExported()) iter.remove();
         }
 
         System.out.println("Number of Obstacles after check:"+datalist.size());
         return datalist;
-    }
-
-    /**
-     * update the right IDs for all Obstacles POJO corresponding to osm DB
-     * @param obslist list of obstacles retrieved from hibernatedb
-     */
-    private void updateIdsAllObstacles(List<Obstacle> obslist){
-        String sql_update_id = "UPDATE obstacle SET osm_id_start = ?, osm_id_end = ? WHERE id = ? ;";
-        PreparedStatement pstmt;
-        try{
-            pstmt = hibernate_con.prepareStatement(sql_update_id);
-            for(Obstacle o:obslist){
-                pstmt.setLong(1, nextPossibleNodeId);
-                o.setOsm_id_start(nextPossibleNodeId);
-                nextPossibleNodeId++;
-                if(o.getLongitudeEnd() != 0 || o.getLatitudeEnd() != 0){
-                    pstmt.setLong(2,nextPossibleNodeId);
-                    o.setOsm_id_end(nextPossibleNodeId);
-                    nextPossibleNodeId++;
-                }
-                else{
-                    pstmt.setLong(2,0);
-                    o.setOsm_id_end(0);
-                }
-                pstmt.setLong(3, o.getId());
-                pstmt.execute();
-            }
-            pstmt.close();
-            hibernate_con.commit();
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-        System.out.println("UPDATE OBSTACLE ID COMPLETED.");
     }
 
     private void writeOneNodeObstaclesInOsmDatabase(List<Obstacle> obstacleList) {
@@ -348,8 +315,144 @@ public class ExportTool {
 
     }
 
+    /**
+     * this method write Obstacle which consist of 2 Nodes in the OSM Database
+     * @param obstacleList the list of the obstacles consisting of 2 nodes
+     */
     private void writeTwoNodeObstaclesInOsmDatabase(List<Obstacle> obstacleList) {
-        // TODO schreiben hier weiter
+        List<Node> nodeListFromRemovedWay;
+        PreparedStatement pstm_selectAWay = null;
+        PreparedStatement pstm_removeWayFromWayNodes = null;
+        PreparedStatement pstm_removeWayFromWay = null;
+
+        String sql_selectAWay = "SELECT * FROM ways WHERE id = ?;";
+        String sql_removeWayFromWayNodes = "DELETE FROM way_nodes WHERE way_id = ? ;";
+        String sql_removeWayFromWay = "DELETE FROM way WHERE way_id = ? ;";
+
+        try {
+            pstm_selectAWay = c.prepareStatement(sql_selectAWay);
+            pstm_removeWayFromWayNodes = c.prepareStatement(sql_removeWayFromWayNodes);
+            pstm_removeWayFromWay = c.prepareStatement(sql_removeWayFromWay);
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        for(Obstacle ob:obstacleList){
+            WayBlacklist wayToBeRemoved = removeWayFromOSMDB(ob, pstm_selectAWay, pstm_removeWayFromWayNodes, pstm_removeWayFromWay);
+            if(wayToBeRemoved == null){
+                nodeListFromRemovedWay = getNodeListFromHibernateDB(ob);
+                wayToBeRemoved = removeWayFromHibernateDB(ob);
+            }
+            create3NewWaysAndSaveThem(ob, wayToBeRemoved);
+        }
+    }
+
+    /**
+     * this method remove the way which the Obstacle o is on from OSM Database
+     * meaning from way and way_nodes table
+     * save its data in WaysBlacklist table
+     * @param o the obstacle
+     * @param pstm_selectAWay
+     * @param pstm_removeWayFromWayNodes
+     * @param pstm_removeWayFromWay
+     */
+    private WayBlacklist removeWayFromOSMDB(Obstacle o, PreparedStatement pstm_selectAWay,
+                                    PreparedStatement pstm_removeWayFromWayNodes, PreparedStatement pstm_removeWayFromWay) {
+        WayBlacklist wayToBeRemoved = giveWayToBeRemoved(o, pstm_selectAWay);
+        postInTableWayBlacklist(wayToBeRemoved);
+        if(wayToBeRemoved == null) return null;
+
+        // Remove way from all osm tables
+        try {
+            // Remove way from way_nodes
+            pstm_removeWayFromWayNodes.setLong(1,o.getId_way());
+            pstm_removeWayFromWayNodes.executeUpdate();
+
+            // Remove way from way
+            pstm_removeWayFromWay.setLong(1,o.getId_way());
+            pstm_removeWayFromWay.executeUpdate();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return wayToBeRemoved;
+    }
+
+    /**
+     *
+     * @param o
+     * @param pstm_selectAWay
+     * @return give back the WayBlacklist Object representing the way to be removed
+     */
+    private WayBlacklist giveWayToBeRemoved(Obstacle o, PreparedStatement pstm_selectAWay) {
+        long osm_id = 0;
+        int version = 0;
+        int user_id = 0;
+        Timestamp tstamp = null;
+        long changeset_id = 0;
+        String tags = "";
+        Array nodes = null;
+        List<Long> nodes_list = null;
+        try {
+            pstm_selectAWay.setLong(1, o.getId_way());
+            ResultSet rs = pstm_selectAWay.executeQuery();
+            if(!rs.isBeforeFirst()) return null;
+            while(rs.next()){
+                osm_id = rs.getLong("id");
+                version = rs.getInt("version");
+                user_id = rs.getInt("user_id");
+                tstamp = rs.getTimestamp("tstamp");
+                changeset_id = rs.getLong("changeset_id");
+                tags = (String)rs.getObject("tags");
+                nodes = rs.getArray("nodes");
+                nodes_list = Arrays.asList((Long[]) nodes.getArray());
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return new WayBlacklist(osm_id,version,user_id,tstamp,changeset_id,tags,nodes_list);
+    }
+
+    /**
+     * Post an WayBlacklist Object in HibernateDB
+     * @param wayToBeRemoved
+     */
+    private void postInTableWayBlacklist(WayBlacklist wayToBeRemoved) {
+        SessionFactory sessionFactory = DatabaseSessionManager.instance().getSessionFactory();
+        Session session = sessionFactory.openSession();
+        session.beginTransaction();
+        session.save(wayToBeRemoved);
+        session.getTransaction().commit();
+    }
+
+    /**
+     *
+     * @param ob
+     * @return the node List for the way which ob is on
+     */
+    private List<Node> getNodeListFromHibernateDB(Obstacle ob) {
+        //TODO klären mit id und way_id
+    }
+
+    /**
+     * remove a way from HibernateDB Table way
+     * @param ob
+     * @return a WayBlacklist Object refering to the removed way
+     */
+    private WayBlacklist removeWayFromHibernateDB(Obstacle ob) {
+
+    }
+
+    /**
+     * create 3 ways, one is from starting point of the removed way to the starting point of the stair
+     * one is the stair itself
+     * one is from the end point of the stair to the end point of the way
+     * save these 3 in HibernateDB as well as OSM DB
+     * @param ob
+     * @param wayToBeRemoved
+     */
+    private void create3NewWaysAndSaveThem(Obstacle ob, WayBlacklist wayToBeRemoved) {
+        // Create 3 Ways
+        // Save them in Hibernate
+        // Save them in OSM DB
     }
 
     /**
@@ -359,7 +462,6 @@ public class ExportTool {
         List<Way> waysList = getAllWays();
         if(waysList.isEmpty()) return;
         System.out.println("Number of Ways: " + waysList.size());
-        updateIdsAllWays(waysList);
         try {
             PreparedStatement insertInTableWays = null;
             PreparedStatement insertInTableWay_nodes = null;
@@ -399,50 +501,10 @@ public class ExportTool {
         Iterator<Way> iter = datalist.iterator();
         while(iter.hasNext()){
             Way w = iter.next();
-            if(w.getOsm_id() != 0) iter.remove();
+            if(w.isAlreadyExported()) iter.remove();
         }
         System.out.println("Number of Ways after check:"+datalist.size());
         return datalist;
-    }
-
-
-    /**
-     * Update all osm_id of retrieved Way objects and IDs of their nodes in hibernateDB
-     * to save osm_id in hibernateDB as well and to show that certain way and node are already saved in osm DB
-     * @param waysList
-     */
-    private void updateIdsAllWays(List<Way> waysList) {
-        PreparedStatement update_way_id;
-        PreparedStatement update_node_id;
-        String sql_update_way_id = "UPDATE ways SET osm_id = ? WHERE id = ? ;";
-        String sql_update_node_id = "UPDATE nodes SET osm_id = ? WHERE id = ? ;";
-
-        try{
-            update_way_id = hibernate_con.prepareStatement(sql_update_way_id);
-            update_node_id = hibernate_con.prepareStatement(sql_update_node_id);
-            for(Way w:waysList){
-                update_way_id.setLong(1, nextPossibleWayId);
-                update_way_id.setLong(2, w.getId());
-                update_way_id.execute();
-                w.setOsm_id(nextPossibleWayId);
-                this.nextPossibleWayId++;
-
-                List<Node> nodesList = w.getNodes();
-                for(Node n: nodesList){
-                    update_node_id.setLong(1, nextPossibleNodeId);
-                    update_node_id.setLong(2, n.getId());
-                    update_node_id.execute();
-                    n.setOsm_id(nextPossibleNodeId);
-                    this.nextPossibleNodeId++;
-                }
-            }
-            update_way_id.close();
-            update_node_id.close();
-            hibernate_con.commit();
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-        System.out.println("UPDATE WAY and NODE ID COMPLETED.");
     }
 
     private void insertWayInTableWay(Way w, PreparedStatement insertInTableWays) {
