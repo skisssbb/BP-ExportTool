@@ -138,8 +138,11 @@ public class ExportTool {
      * the first method from Exporttool to be executed
      */
     public void startExportProcess(){
+        System.out.println("WRITE WAY ------------------------------------------------");
         writeWaysInOSMDatabase();
+        System.out.println("WRITE WAY done ------------------------------------------------");
         writeObstaclesInOsmDatabase();
+        System.out.println("WRITE Obstacle done ------------------------------------------------");
         closeUpAllConnections();
     }
 
@@ -160,7 +163,9 @@ public class ExportTool {
             else twoNodesObstacleList.add(o);
         }
         // Its important to write OneNodeObstacle first
+        System.out.println("WRITING ONE NODE OBS --------------------------------------------------------");
         writeOneNodeObstaclesInOsmDatabase(oneNodeObstacleList);
+        System.out.println("WRITING TWO NODE OBS --------------------------------------------------------");
         writeTwoNodeObstaclesInOsmDatabase(twoNodesObstacleList);
         updateAlreadyExportedObstacle(obstacleList);
     }
@@ -221,10 +226,15 @@ public class ExportTool {
             updateWay_Nodes2.close();
             insertWay_Nodes.close();
             getSequenceId.close();
-            c.commit();
+            //c.commit();
             System.out.println("UPDATE OSM DB COMPLETED");
         } catch (SQLException e){
             e.printStackTrace();
+            try {
+                c.rollback();
+            } catch (SQLException e1) {
+                e1.printStackTrace();
+            }
         }
     }
 
@@ -265,21 +275,25 @@ public class ExportTool {
         Statement stmt = null;
         try {
             stmt = c.createStatement();
-            ResultSet rs = stmt.executeQuery("SELECT nodes FROM ways WHERE id = "
-                    +"'"+String.valueOf(o.getId_way())+"';");
-            rs.next();
-            Array nodes = rs.getArray(1);
-            Long[] a_nodes = (Long[])nodes.getArray();
-            Long[] result = insertNodeInArray(a_nodes, o);
-            Array result_nodes = c.createArrayOf("BIGINT", result);
-            pstmt.setArray(1,result_nodes);
-            pstmt.setLong(2, o.getId_way());
-            pstmt.execute();
+            String sql = "SELECT nodes FROM ways WHERE id = "+"'"+String.valueOf(o.getId_way())+"';";
+            ResultSet rs = stmt.executeQuery(sql);
+            System.out.println("SQL: "+sql);
+            if(rs.next()){
+                System.out.println("Result Next True");
+                Array nodes = rs.getArray(1);
+                Long[] a_nodes = (Long[])nodes.getArray();
+                Long[] result = insertNodeInArray(a_nodes, o);
+                Array result_nodes = c.createArrayOf("BIGINT", result);
+                pstmt.setArray(1,result_nodes);
+                pstmt.setLong(2, o.getId_way());
+                pstmt.execute();
+            }
             rs.close();
             stmt.close();
 
         } catch (SQLException e) {
             e.printStackTrace();
+            System.out.println("HERE:"+o.getId_way());
         }
     }
 
@@ -309,7 +323,7 @@ public class ExportTool {
      * @param getseqstmt Prepare SELECT Statement to retrieve sequence ID
      */
     private void updateTableWay_nodes(Obstacle o, PreparedStatement updatestmt, PreparedStatement updatestmt2,
-                                      PreparedStatement insertstmt , PreparedStatement getseqstmt) {
+                                      PreparedStatement insertstmt, PreparedStatement getseqstmt) {
         long sequence_id_firstNode;
         long way_id = o.getId_way();
         long obstacle_id = o.getOsm_id_start();
@@ -318,6 +332,8 @@ public class ExportTool {
             getseqstmt.setLong(1, o.getId_way());
             getseqstmt.setLong(2, o.getId_firstnode());
             ResultSet rs = getseqstmt.executeQuery();
+            System.out.println(getseqstmt);
+            System.out.println(rs.isBeforeFirst());
             if(rs.next()){
                 sequence_id_firstNode = rs.getInt("sequence_id");
                 sequence_id_obstacle = sequence_id_firstNode + 1;
@@ -358,7 +374,7 @@ public class ExportTool {
 
         String sql_selectAWay = "SELECT * FROM ways WHERE id = ?;";
         String sql_removeWayFromWayNodes = "DELETE FROM way_nodes WHERE way_id = ? ;";
-        String sql_removeWayFromWay = "DELETE FROM way WHERE way_id = ? ;";
+        String sql_removeWayFromWay = "DELETE FROM ways WHERE id = ? ;";
 
         try {
             pstm_selectAWay = c.prepareStatement(sql_selectAWay);
@@ -432,7 +448,7 @@ public class ExportTool {
                 user_id = rs.getInt("user_id");
                 tstamp = rs.getTimestamp("tstamp");
                 changeset_id = rs.getLong("changeset_id");
-                tags = (String)rs.getObject("tags");
+                tags = HStoreConverter.toString((Map<String, String>) rs.getObject("tags"));
                 nodes = rs.getArray("nodes");
                 nodes_list = Arrays.asList((Long[]) nodes.getArray());
             }
@@ -447,14 +463,19 @@ public class ExportTool {
      * @param wayToBeRemoved
      */
     private void postInTableWayBlacklist(WayBlacklist wayToBeRemoved) {
+        Session session = null;
+        Transaction tx = null;
         try{
             SessionFactory sessionFactory = DatabaseSessionManager.instance().getSessionFactory();
-            Session session = sessionFactory.openSession();
-            session.beginTransaction();
+            session = sessionFactory.openSession();
+            tx = session.beginTransaction();
             session.save(wayToBeRemoved);
-            session.getTransaction().commit();
+            tx.commit();
         }catch (Exception e){
             e.printStackTrace();
+            tx.rollback();
+        }finally {
+            session.close();
         }
     }
 
@@ -463,14 +484,19 @@ public class ExportTool {
      * @param way
      */
     private void postInTableWayHibernate(Way way){
+        Session session = null;
+        Transaction tx = null;
         try{
             SessionFactory sessionFactory = DatabaseSessionManager.instance().getSessionFactory();
-            Session session = sessionFactory.openSession();
-            session.beginTransaction();
+            session = sessionFactory.openSession();
+            tx = session.beginTransaction();
             session.save(way);
-            session.getTransaction().commit();
+            tx.commit();
         }catch (Exception e){
             e.printStackTrace();
+            tx.rollback();
+        }finally {
+            session.close();
         }
     }
 
@@ -696,10 +722,15 @@ public class ExportTool {
             insertInTableWays.close();
             insertInTableWay_nodes.close();
             insertInTableNodes.close();
-            c.commit();
+            //c.commit();
             System.out.println("UPDATE OSM DB COMPLETED");
         } catch (SQLException e){
             e.printStackTrace();
+            try {
+                c.rollback();
+            } catch (SQLException e1) {
+                e1.printStackTrace();
+            }
         }
     }
 
@@ -858,12 +889,14 @@ public class ExportTool {
         }
         else if(ob instanceof Way){
             Way w = (Way)ob;
-            if(w.getAdditionalTags() != ""){
+            if(!w.getAdditionalTags().equals("")){
+                //System.out.println("Way:"+w+" return "+w.getAdditionalTags());
                 return w.getAdditionalTags();
             }
             else if(!w.getName().equals("")) tags.put("name",w.getName());
             tags.put("highway",w.getHighway());
         }
+        //System.out.println("Object "+ob+" returns "+HStoreConverter.toString(tags));
         return HStoreConverter.toString(tags);
     }
 
@@ -932,6 +965,7 @@ public class ExportTool {
 
     public static void main(String[] args) {
         ExportTool.getInstance().startExportProcess();
+        Connection c = PostgreSQLJDBC.getInstance().getConnection();
         System.out.println("ExportTool.jar SUCCESSFUL EXECUTED");
     }
 }
