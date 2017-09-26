@@ -7,13 +7,17 @@ import bp.common.model.ways.Way;
 import bp17.jerseyserver.exceptions.SequenceIDNotFoundException;
 import org.hibernate.Session;
 import org.hibernate.SessionFactory;
+import org.hibernate.Transaction;
 import org.hibernate.boot.jaxb.SourceType;
 import org.postgresql.util.HStoreConverter;
 
+import javax.persistence.Query;
 import javax.persistence.criteria.CriteriaBuilder;
 import javax.persistence.criteria.CriteriaQuery;
 import javax.persistence.criteria.Root;
+import javax.xml.crypto.Data;
 import javax.xml.transform.Result;
+import java.io.Serializable;
 import java.sql.*;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
@@ -37,6 +41,24 @@ public class ExportTool {
     private Connection hibernate_con;
     private String current_time;
     private Timestamp current_timestamp;
+
+    /*************************************************************************************
+     *
+     * SQL Section
+     *
+     *************************************************************************************/
+    PreparedStatement pstmt_selectLatitudeFromNode = null;
+    PreparedStatement pstmt_selectLongitudeFromNode = null;
+    PreparedStatement pstmt_checkIfOSMIDExistInNode = null;
+    String sql_selectLatitudeFromNode = "SELECT ST_Y(geom) AS latitude FROM nodes WHERE id = ?;";
+    String sql_selectLongitudeFromNode = "SELECT ST_X(geom) AS longitude FROM nodes WHERE id = ?;";
+    String sql_checkIfOSMIDExistInNode =  "SELECT id FROM nodes WHERE id = ?;";
+
+    /*************************************************************************************
+     *
+     * SQL Section
+     *
+     *************************************************************************************/
 
     /**
      * Constructor sets global c, formated current_time and nextPossibleNodeId
@@ -75,6 +97,14 @@ public class ExportTool {
             e.printStackTrace();
         }
 
+        try {
+            pstmt_selectLatitudeFromNode = c.prepareStatement(sql_selectLatitudeFromNode);
+            pstmt_selectLongitudeFromNode= c.prepareStatement(sql_selectLongitudeFromNode);
+            pstmt_checkIfOSMIDExistInNode = c.prepareStatement(sql_checkIfOSMIDExistInNode);
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
     }
     public static ExportTool getInstance(){
         if(instance == null){
@@ -108,8 +138,8 @@ public class ExportTool {
      * the first method from Exporttool to be executed
      */
     public void startExportProcess(){
-        writeObstaclesInOsmDatabase();
         writeWaysInOSMDatabase();
+        writeObstaclesInOsmDatabase();
         closeUpAllConnections();
     }
 
@@ -132,6 +162,7 @@ public class ExportTool {
         // Its important to write OneNodeObstacle first
         writeOneNodeObstaclesInOsmDatabase(oneNodeObstacleList);
         writeTwoNodeObstaclesInOsmDatabase(twoNodesObstacleList);
+        updateAlreadyExportedObstacle(obstacleList);
     }
 
 
@@ -320,7 +351,7 @@ public class ExportTool {
      * @param obstacleList the list of the obstacles consisting of 2 nodes
      */
     private void writeTwoNodeObstaclesInOsmDatabase(List<Obstacle> obstacleList) {
-        List<Node> nodeListFromRemovedWay;
+        Way removedWayObject = null;
         PreparedStatement pstm_selectAWay = null;
         PreparedStatement pstm_removeWayFromWayNodes = null;
         PreparedStatement pstm_removeWayFromWay = null;
@@ -338,11 +369,11 @@ public class ExportTool {
         }
         for(Obstacle ob:obstacleList){
             WayBlacklist wayToBeRemoved = removeWayFromOSMDB(ob, pstm_selectAWay, pstm_removeWayFromWayNodes, pstm_removeWayFromWay);
-            if(wayToBeRemoved == null){
-                nodeListFromRemovedWay = getNodeListFromHibernateDB(ob);
-                wayToBeRemoved = removeWayFromHibernateDB(ob);
+            removedWayObject = getWayObjectFromHibernateDB(ob);
+            if(removedWayObject != null){
+                removeWayFromHibernateDB(removedWayObject);
             }
-            create3NewWaysAndSaveThem(ob, wayToBeRemoved);
+            create3NewWaysAndSaveThem(ob, wayToBeRemoved, removedWayObject);
         }
     }
 
@@ -412,15 +443,35 @@ public class ExportTool {
     }
 
     /**
-     * Post an WayBlacklist Object in HibernateDB
+     * Post a WayBlacklist Object in HibernateDB
      * @param wayToBeRemoved
      */
     private void postInTableWayBlacklist(WayBlacklist wayToBeRemoved) {
-        SessionFactory sessionFactory = DatabaseSessionManager.instance().getSessionFactory();
-        Session session = sessionFactory.openSession();
-        session.beginTransaction();
-        session.save(wayToBeRemoved);
-        session.getTransaction().commit();
+        try{
+            SessionFactory sessionFactory = DatabaseSessionManager.instance().getSessionFactory();
+            Session session = sessionFactory.openSession();
+            session.beginTransaction();
+            session.save(wayToBeRemoved);
+            session.getTransaction().commit();
+        }catch (Exception e){
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Post a Way Object in HibernateDB
+     * @param way
+     */
+    private void postInTableWayHibernate(Way way){
+        try{
+            SessionFactory sessionFactory = DatabaseSessionManager.instance().getSessionFactory();
+            Session session = sessionFactory.openSession();
+            session.beginTransaction();
+            session.save(way);
+            session.getTransaction().commit();
+        }catch (Exception e){
+            e.printStackTrace();
+        }
     }
 
     /**
@@ -428,17 +479,48 @@ public class ExportTool {
      * @param ob
      * @return the node List for the way which ob is on
      */
-    private List<Node> getNodeListFromHibernateDB(Obstacle ob) {
-        //TODO klären mit id und way_id
+    private Way getWayObjectFromHibernateDB(Obstacle ob) {
+        // TESTED
+        Session session =  DatabaseSessionManager.instance().getSessionFactory().openSession();
+        CriteriaBuilder builder = session.getCriteriaBuilder();
+        CriteriaQuery<Way> criteria = builder.createQuery(Way.class);
+        Root<Way> root = criteria.from(Way.class);
+        criteria.select(root);
+        criteria.where(builder.equal(root.get("osm_id"), ob.getId_way()));
+        List<Way> datalist = session.createQuery(criteria).getResultList();
+        session.close();
+        if(!datalist.isEmpty()) return datalist.get(0);
+        return null;
     }
 
     /**
      * remove a way from HibernateDB Table way
-     * @param ob
+     * @param way
      * @return a WayBlacklist Object refering to the removed way
      */
-    private WayBlacklist removeWayFromHibernateDB(Obstacle ob) {
+    private void removeWayFromHibernateDB(Way way) {
+        List<Long> node_osmids_list = new ArrayList<Long>();
+        for(Node n:way.getNodes()) node_osmids_list.add(n.getOsm_id());
+        WayBlacklist result = new WayBlacklist(way.getOsm_id(), -1, -1,
+                new Timestamp(System.currentTimeMillis()),-1, getHStoreValue(way),node_osmids_list);
+        Session session = null;
+        Transaction tx = null;
 
+        try {
+            session =  DatabaseSessionManager.instance().getSessionFactory().openSession();
+            tx = session.beginTransaction();
+            Serializable id = new Long(way.getId());
+            Object persistentInstance = session.load(Way.class, id);
+            if(persistentInstance != null){
+                session.delete(persistentInstance);
+            }
+            tx.commit();
+
+        }catch (Exception ex) {
+            ex.printStackTrace();
+            tx.rollback();
+        }
+        finally {session.close();}
     }
 
     /**
@@ -446,13 +528,136 @@ public class ExportTool {
      * one is the stair itself
      * one is from the end point of the stair to the end point of the way
      * save these 3 in HibernateDB as well as OSM DB
-     * @param ob
-     * @param wayToBeRemoved
+     * @param ob the obstacle
+     * @param wayToBeRemoved WayBlacklist Object which represents the deleted Way
+     * @param removedWayObject the deleted Way Object
      */
-    private void create3NewWaysAndSaveThem(Obstacle ob, WayBlacklist wayToBeRemoved) {
+    private void create3NewWaysAndSaveThem(Obstacle ob, WayBlacklist wayToBeRemoved, Way removedWayObject) {
         // Create 3 Ways
-        // Save them in Hibernate
-        // Save them in OSM DB
+        List<Node> startPiece_nl = new ArrayList<Node>();
+        List<Node> middlePiece_nl = new ArrayList<Node>();
+        List<Node> endPiece_nl = new ArrayList<Node>();
+        int phase = 1;
+        for(Long l:wayToBeRemoved.getNodes()){
+            if(phase == 1){
+                if(l == ob.getId_firstnode()){
+                    phase = 2;
+                    // StartPiece ends with the beginning of Stair
+                    startPiece_nl.add(new Node(ob.getLatitudeStart(), ob.getLongitudeStart()));
+                }
+                else{
+                    startPiece_nl.add(new Node(getLatitudeFromNode(l), getLongitudeFromNode(l)));
+                }
+            }
+            if(phase == 2){
+                middlePiece_nl.add(new Node(ob.getLatitudeStart(),ob.getLongitudeStart()));
+                middlePiece_nl.add(new Node(ob.getLatitudeEnd(),ob.getLongitudeEnd()));
+                phase = 3;
+            }
+            if(phase == 3){
+                endPiece_nl.add(new Node(getLatitudeFromNode(l), getLongitudeFromNode(l)));
+            }
+        }
+        Way startPiece = new Way("", startPiece_nl);
+        startPiece.setOsm_id(nextPossibleWayId);
+        nextPossibleWayId++;
+        startPiece.setAdditionalTags(wayToBeRemoved.getTags());
+
+        // The Stair itself
+        Way middlePiece = new Way("",middlePiece_nl);
+        middlePiece.setOsm_id(nextPossibleWayId);
+        nextPossibleWayId++;
+        middlePiece.setAdditionalTags(getHStoreValue(ob));
+        middlePiece.setIsObstacle(true);
+
+        Way endPiece = new Way("", endPiece_nl);
+        endPiece.setOsm_id(nextPossibleWayId);
+        nextPossibleWayId++;
+        endPiece.setAdditionalTags(wayToBeRemoved.getTags());
+
+        // Save 2 Objects in OSM DB
+        Obstacle second = cloneObstacle(ob);
+        second.setLongitudeEnd(0);
+        second.setLatitudeEnd(0);
+        second.setLongitudeStart(ob.getLongitudeEnd());
+        second.setLatitudeStart(ob.getLatitudeEnd());
+        Obstacle first = ob;
+        first.setLongitudeEnd(0);
+        first.setLatitudeEnd(0);
+        List<Obstacle> twoObstacles = new ArrayList<Obstacle>();
+        twoObstacles.add(first);
+        twoObstacles.add(second);
+        writeOneNodeObstaclesInOsmDatabase(twoObstacles);
+
+        // Save 3 Ways in OSM Database
+        List<Way> threeways = new ArrayList<Way>();
+        threeways.add(startPiece);
+        threeways.add(middlePiece);
+        threeways.add(endPiece);
+        writeWaysInOsmDatabase(threeways);
+
+        // Save 3 Ways in Hibernate
+        for(Way w:threeways) postInTableWayHibernate(w);
+        System.out.println("3 Ways have been posted to HibernateDB");
+    }
+
+    /**
+     *
+     * @param osm_id
+     * @return give back latitude from Node given osm_id
+     */
+    private double getLatitudeFromNode(long osm_id){
+        try {
+            pstmt_selectLatitudeFromNode.setLong(1, osm_id);
+            ResultSet rs = pstmt_selectLatitudeFromNode.executeQuery();
+            if(rs.next()) return rs.getDouble("latitude");
+            rs.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return -1;
+    }
+
+    /**
+     *
+     * @param osm_id
+     * @return give back latitude from Node given osm_id
+     */
+    private double getLongitudeFromNode(long osm_id){
+        try {
+            pstmt_selectLongitudeFromNode.setLong(1, osm_id);
+            ResultSet rs = pstmt_selectLongitudeFromNode.executeQuery();
+            if(rs.next()) return rs.getDouble("longitude");
+            rs.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return -1;
+    }
+
+    /**
+     *
+     * @param ob
+     * @return give back a deep copy of the Obstacle ob
+     */
+    private Obstacle cloneObstacle(Obstacle ob) {
+        if(ob instanceof Stairs){
+            Stairs oldStair = (Stairs) ob;
+            Stairs newStair = new Stairs(oldStair.getName(),oldStair.getLongitudeStart(),
+                    oldStair.getLatitudeStart(), oldStair.getLongitudeEnd(), oldStair.getLatitudeEnd(),oldStair.getmNumberOfStairs(),oldStair.getHandrail());
+            newStair.setIncline(oldStair.getIncline());
+            newStair.setHandrail(oldStair.getHandrail());
+            newStair.setTactile_paving(oldStair.getTactile_paving());
+            newStair.setTactile_writing(oldStair.getTactile_writing());
+            newStair.setRamp(oldStair.getRamp());
+            newStair.setRamp_stroller(oldStair.getRamp_stroller());
+            newStair.setRamp_wheelchair(oldStair.getRamp_wheelchair());
+            newStair.setWidth(oldStair.getWidth());
+            return newStair;
+        }
+        Stairs result = new Stairs(ob.getName(),ob.getLongitudeStart(),
+                ob.getLatitudeStart(), ob.getLongitudeEnd(), ob.getLatitudeEnd(),0, null);
+        return new Stairs();
     }
 
     /**
@@ -462,6 +667,11 @@ public class ExportTool {
         List<Way> waysList = getAllWays();
         if(waysList.isEmpty()) return;
         System.out.println("Number of Ways: " + waysList.size());
+        writeWaysInOsmDatabase(waysList);
+        updateAlredyExportedWayAndNode(waysList);
+    }
+
+    private void writeWaysInOsmDatabase(List<Way> waysList) {
         try {
             PreparedStatement insertInTableWays = null;
             PreparedStatement insertInTableWay_nodes = null;
@@ -555,6 +765,7 @@ public class ExportTool {
         long changesetID = -1;
 
         for(Node n:w.getNodes()){
+            if(nodeExistInOSMDB(n.getOsm_id())) continue;
             try {
                 insertInTableNodes.setLong(1, n.getOsm_id());
                 insertInTableNodes.setInt(2, version);
@@ -569,6 +780,17 @@ public class ExportTool {
                 e.printStackTrace();
             }
         }
+    }
+
+    private boolean nodeExistInOSMDB(long osm_id) {
+        try {
+            pstmt_checkIfOSMIDExistInNode.setLong(1,osm_id);
+            ResultSet rs = pstmt_checkIfOSMIDExistInNode.executeQuery();
+            if(!rs.isBeforeFirst()) return true;
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return false;
     }
 
     /**
@@ -636,31 +858,80 @@ public class ExportTool {
         }
         else if(ob instanceof Way){
             Way w = (Way)ob;
-            if(!w.getName().equals("")) tags.put("name",w.getName());
-            tags.put("highway","*");
+            if(w.getAdditionalTags() != ""){
+                return w.getAdditionalTags();
+            }
+            else if(!w.getName().equals("")) tags.put("name",w.getName());
+            tags.put("highway",w.getHighway());
         }
-
         return HStoreConverter.toString(tags);
     }
 
+    private void updateAlredyExportedWayAndNode(List<Way> waysList) {
+        Session session = null;
+        Transaction tx = null;
+
+        try {
+            session =  DatabaseSessionManager.instance().getSessionFactory().openSession();
+            tx = session.beginTransaction();
+            for(Way w:waysList){
+                w.setAlreadyExported(true);
+                session.saveOrUpdate(w);
+                for(Node n:w.getNodes()){
+                    n.setAlreadyExported(true);
+                    session.saveOrUpdate(n);
+                }
+            }
+            tx.commit();
+
+        }catch (Exception ex) {
+            ex.printStackTrace();
+            tx.rollback();
+        }
+        finally {session.close();}
+        System.out.println("All ways marked as exported in HibernateDB.");
+    }
+
+    private void updateAlreadyExportedObstacle(List<Obstacle> obstacleList){
+        Session session = null;
+        Transaction tx = null;
+
+        try {
+            session =  DatabaseSessionManager.instance().getSessionFactory().openSession();
+            tx = session.beginTransaction();
+            for(Obstacle o:obstacleList){
+                o.setAlreadyExported(true);
+                session.saveOrUpdate(o);
+            }
+            tx.commit();
+
+        }catch (Exception ex) {
+            ex.printStackTrace();
+            tx.rollback();
+        }
+        finally {session.close();}
+        System.out.println("All Obstacles marked as exported in HibernateDB.");
+    }
 
     /**
      * close up all opened connections. This is called at last.
      */
     private void closeUpAllConnections() {
         try {
+            pstmt_checkIfOSMIDExistInNode.close();
+            pstmt_selectLongitudeFromNode.close();
+            pstmt_selectLatitudeFromNode.close();
             c.close();
             hibernate_con.close();
             DatabaseSessionManager.instance().getSessionFactory().close();
+            System.out.println("All Connections closing up.");
         } catch (SQLException e) {
             e.printStackTrace();
         }
     }
 
     public static void main(String[] args) {
-        //ExportTool.getInstance().startExportProcess();
+        ExportTool.getInstance().startExportProcess();
         System.out.println("ExportTool.jar SUCCESSFUL EXECUTED");
-        Stairs a = new Stairs("Hoemland",1.21421, 2.4214241, 1.124124, 34.36343, 20, "no");
-        a.setIncline("up");
     }
 }
