@@ -26,6 +26,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.Date;
 
+import static java.lang.Long.max;
+
 /**
  * This class handles all the export tool related tasks
  * Retrieve POJOs from hibernatedb
@@ -78,19 +80,7 @@ public class ExportTool {
             hibernate_con.setAutoCommit(false);
             System.out.println("Hibernate Connected.");
 
-            Statement stmt1 = c.createStatement();
-            ResultSet rs = stmt1.executeQuery("SELECT max(id) FROM nodes");
-            rs.next();
-            this.nextPossibleNodeId = rs.getLong("max")+1 ;
-            rs.close();
-            stmt1.close();
-
-            Statement stmt2 = c.createStatement();
-            ResultSet rs2 = stmt2.executeQuery("SELECT max(id) FROM ways");
-            rs2.next();
-            this.nextPossibleWayId = rs2.getLong("max")+1 ;
-            rs2.close();
-            stmt2.close();
+            getNextPossibleNodeAndWayID();
         } catch (SQLException e) {
             e.printStackTrace();
         } catch (ClassNotFoundException e) {
@@ -111,6 +101,68 @@ public class ExportTool {
             instance = new ExportTool();
         }
         return instance;
+    }
+
+    /**
+     * compare max ID from OSM DB with Hibernate DB and choose the max one
+     */
+    private void getNextPossibleNodeAndWayID() {
+        long osm_maxNodeID;
+        long osm_maxWayID;
+        long hibernate_maxNodeID;
+        long hibernate_maxWayID;
+        long hibernate_maxObstacleIDStart;
+        long hibernate_maxObstacleIDEnd;
+
+        Connection postgres_connection = PostgreSQLJDBC.getInstance().getConnection();
+
+        Statement stmt1 = null;
+        try {
+            // Get Informations from OSM Database
+            stmt1 = postgres_connection.createStatement();
+            ResultSet rs = stmt1.executeQuery("SELECT max(id) FROM nodes");
+            rs.next();
+            osm_maxNodeID = rs.getLong("max") ;
+            rs.close();
+            stmt1.close();
+
+            Statement stmt2 = postgres_connection.createStatement();
+            ResultSet rs2 = stmt2.executeQuery("SELECT max(id) FROM ways");
+            rs2.next();
+            osm_maxWayID = rs2.getLong("max");
+            rs2.close();
+            stmt2.close();
+
+            // Get Information from Hibernate Database
+
+            SessionFactory sessionFactory = DatabaseSessionManager.instance().getSessionFactory();
+            Session session = sessionFactory.openSession();
+            org.hibernate.query.Query query_node = session.createQuery("SELECT max(N.osm_id) FROM Node N");
+            Long maxNodeID = (Long) query_node.list().get(0);
+            if(maxNodeID != null) hibernate_maxNodeID = maxNodeID;
+            else hibernate_maxNodeID = 0;
+
+            org.hibernate.query.Query query_obstacle_start = session.createQuery("SELECT max(O.osm_id_start) FROM Obstacle O");
+            Long maxObstacleIDStart = (Long) query_obstacle_start.list().get(0);
+            if(maxObstacleIDStart != null) hibernate_maxObstacleIDStart = maxObstacleIDStart;
+            else hibernate_maxObstacleIDStart = 0;
+
+            org.hibernate.query.Query query_obstacle_end = session.createQuery("SELECT max(O.osm_id_end) FROM Obstacle O");
+            Long maxObstacleIDEnd = (Long) query_obstacle_end.list().get(0);
+            if(maxObstacleIDEnd != null) hibernate_maxObstacleIDEnd = maxObstacleIDEnd;
+            else hibernate_maxObstacleIDEnd = 0;
+
+            org.hibernate.query.Query query_way = session.createQuery("SELECT max(W.osm_id) FROM Way W");
+            Long maxWayID = (Long) query_way.list().get(0);
+            if(maxWayID != null) hibernate_maxWayID = maxWayID;
+            else hibernate_maxWayID = 0;
+
+            nextPossibleNodeId = max(max(max(osm_maxNodeID, hibernate_maxNodeID),hibernate_maxObstacleIDStart),hibernate_maxObstacleIDEnd)+1;
+            nextPossibleWayId = max(osm_maxWayID, hibernate_maxWayID)+1;
+            session.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
     }
 
     /**
@@ -352,14 +404,11 @@ public class ExportTool {
             }
             else{
                 rs.close();
-                throw new SequenceIDNotFoundException();
+                //throw new SequenceIDNotFoundException();
             }
         } catch (SQLException e) {
             e.printStackTrace();
-        } catch (SequenceIDNotFoundException e) {
-            e.printStackTrace();
         }
-
     }
 
     /**
@@ -384,9 +433,11 @@ public class ExportTool {
             e.printStackTrace();
         }
         for(Obstacle ob:obstacleList){
+            System.out.println("Remove Way with OSM_ID: "+ob.getId_way()+" from OSM DB.----------------------------------");
             WayBlacklist wayToBeRemoved = removeWayFromOSMDB(ob, pstm_selectAWay, pstm_removeWayFromWayNodes, pstm_removeWayFromWay);
             removedWayObject = getWayObjectFromHibernateDB(ob);
             if(removedWayObject != null){
+                System.out.println("Remove Way with OSM_ID: "+ob.getId_way()+" from Hibernate DB.----------------------------------");
                 removeWayFromHibernateDB(removedWayObject);
             }
             create3NewWaysAndSaveThem(ob, wayToBeRemoved, removedWayObject);
@@ -484,6 +535,7 @@ public class ExportTool {
      * @param way
      */
     private void postInTableWayHibernate(Way way){
+        System.out.println("Posted Way in Hibernate:"+way);
         Session session = null;
         Transaction tx = null;
         try{
@@ -560,6 +612,7 @@ public class ExportTool {
      */
     private void create3NewWaysAndSaveThem(Obstacle ob, WayBlacklist wayToBeRemoved, Way removedWayObject) {
         // Create 3 Ways
+        System.out.println("CREATING 3 new Ways------------------------------------------------------");
         List<Node> startPiece_nl = new ArrayList<Node>();
         List<Node> middlePiece_nl = new ArrayList<Node>();
         List<Node> endPiece_nl = new ArrayList<Node>();
@@ -585,23 +638,33 @@ public class ExportTool {
             }
         }
         Way startPiece = new Way("", startPiece_nl);
+        for(Node n:startPiece_nl){
+            n.setWay(startPiece);
+        }
         startPiece.setOsm_id(nextPossibleWayId);
         nextPossibleWayId++;
         startPiece.setAdditionalTags(wayToBeRemoved.getTags());
 
         // The Stair itself
         Way middlePiece = new Way("",middlePiece_nl);
+        for(Node n:startPiece_nl){
+            n.setWay(middlePiece);
+        }
         middlePiece.setOsm_id(nextPossibleWayId);
         nextPossibleWayId++;
         middlePiece.setAdditionalTags(getHStoreValue(ob));
         middlePiece.setIsObstacle(true);
 
         Way endPiece = new Way("", endPiece_nl);
+        for(Node n:startPiece_nl){
+            n.setWay(endPiece);
+        }
         endPiece.setOsm_id(nextPossibleWayId);
         nextPossibleWayId++;
         endPiece.setAdditionalTags(wayToBeRemoved.getTags());
 
         // Save 2 Objects in OSM DB
+        System.out.println("SAVE 2 STAIRS OBJECT IN OSM DB-------------------------------------------");
         Obstacle second = cloneObstacle(ob);
         second.setLongitudeEnd(0);
         second.setLatitudeEnd(0);
@@ -616,6 +679,7 @@ public class ExportTool {
         writeOneNodeObstaclesInOsmDatabase(twoObstacles);
 
         // Save 3 Ways in OSM Database
+        System.out.println("SAVE 3 WAY OBJECTS IN OSM DB-------------------------------------------");
         List<Way> threeways = new ArrayList<Way>();
         threeways.add(startPiece);
         threeways.add(middlePiece);
@@ -623,8 +687,10 @@ public class ExportTool {
         writeWaysInOsmDatabase(threeways);
 
         // Save 3 Ways in Hibernate
+        System.out.println("SAVE 3 WAY OBJECT IN HIBERNATE DB-------------------------------------------");
         for(Way w:threeways) postInTableWayHibernate(w);
         System.out.println("3 Ways have been posted to HibernateDB");
+        updateAlredyExportedWayAndNode(threeways);
     }
 
     /**
@@ -796,7 +862,7 @@ public class ExportTool {
         long changesetID = -1;
 
         for(Node n:w.getNodes()){
-            if(nodeExistInOSMDB(n.getOsm_id())) continue;
+            if(nodeExistInOSMDB(n.getOsm_id()) || n.getOsm_id() == 0) continue;
             try {
                 insertInTableNodes.setLong(1, n.getOsm_id());
                 insertInTableNodes.setInt(2, version);
@@ -909,11 +975,10 @@ public class ExportTool {
             tx = session.beginTransaction();
             for(Way w:waysList){
                 w.setAlreadyExported(true);
-                session.saveOrUpdate(w);
                 for(Node n:w.getNodes()){
                     n.setAlreadyExported(true);
-                    session.saveOrUpdate(n);
                 }
+                session.saveOrUpdate(w);
             }
             tx.commit();
 
