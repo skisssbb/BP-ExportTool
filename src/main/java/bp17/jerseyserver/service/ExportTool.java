@@ -278,7 +278,7 @@ public class ExportTool {
             updateWay_Nodes2.close();
             insertWay_Nodes.close();
             getSequenceId.close();
-            //c.commit();
+            c.commit();
             System.out.println("UPDATE OSM DB COMPLETED");
         } catch (SQLException e){
             e.printStackTrace();
@@ -623,44 +623,58 @@ public class ExportTool {
         // die nee alles neu in way_nodes eingefügt werden
         Node stairStart = null;
         Node stairEnd = null;
-        int phase = 1;
+        boolean toggle = true;
+        List<Node> tmpList = startPiece_nl;
         for(Long l:wayToBeRemoved.getNodes()){
-            if(phase == 1){
+            if(toggle){
                 if(l == ob.getId_firstnode()){
-                    phase = 2;
+                    Node n = new Node(getLatitudeFromNode(l), getLongitudeFromNode(l));
+                    n.setOsm_id(l);
+                    tmpList.add(n);
+
+                    Node stairstartClone = new Node(ob.getLatitudeStart(), ob.getLongitudeStart());
+                    stairstartClone.setOsm_id(ob.getOsm_id_start());
+                    stairstartClone.setAdditionalTags(getHStoreValue(ob));
+                    tmpList.add(stairstartClone);
+
                     // StartPiece ends with the beginning of Stair
                     stairStart = new Node(ob.getLatitudeStart(), ob.getLongitudeStart());
-                    stairStart.setOsm_id(ob.getId_firstnode());
+                    stairStart.setOsm_id(ob.getOsm_id_start());
                     stairStart.setAdditionalTags(getHStoreValue(ob));
-                    startPiece_nl.add(stairStart);
                     middlePiece_nl.add(stairStart);
-                    continue;
+
+                    stairEnd = new Node(ob.getLatitudeEnd(), ob.getLongitudeEnd());
+                    stairEnd.setOsm_id(ob.getOsm_id_end());
+                    stairEnd.setAdditionalTags(getHStoreValue(ob));
+                    middlePiece_nl.add(stairEnd);
+
+                    Node stairEndClone = new Node(ob.getLatitudeEnd(), ob.getLongitudeEnd());
+                    stairEndClone.setOsm_id(ob.getOsm_id_end());
+                    stairEndClone.setAdditionalTags(getHStoreValue(ob));
+                    endPiece_nl.add(stairEndClone);
+
+                    toggle = false;
+                    tmpList = endPiece_nl;
                 }
                 else{
                     Node n = new Node(getLatitudeFromNode(l), getLongitudeFromNode(l));
                     n.setOsm_id(l);
-                    startPiece_nl.add(n);
+                    tmpList.add(n);
                 }
             }
-            if(phase == 2){
-                stairEnd = new Node(ob.getLatitudeEnd(), ob.getLongitudeEnd());
-                stairEnd.setOsm_id(ob.getId_lastnode());
-                stairEnd.setAdditionalTags(getHStoreValue(ob));
-                middlePiece_nl.add(stairEnd);
-                endPiece_nl.add(stairEnd);
-                phase = 3;
-                continue;
-            }
-            if(phase == 3){
-                if(l != ob.getId_firstnode() && l != ob.getId_lastnode()){
+            else{
+                if(l == ob.getId_lastnode()){
+                    toggle = true;
                     Node n = new Node(getLatitudeFromNode(l), getLongitudeFromNode(l));
                     n.setOsm_id(l);
-                    endPiece_nl.add(n);
+                    tmpList.add(n);
+                    continue;
                 }
             }
         }
+
         Way startPiece = new Way("", startPiece_nl);
-        for(Node n:startPiece_nl){
+        for(Node n:startPiece.getNodes()){
             n.setWay(startPiece);
         }
         startPiece.setOsm_id(nextPossibleWayId);
@@ -669,7 +683,7 @@ public class ExportTool {
 
         // The Stair itself
         Way middlePiece = new Way("",middlePiece_nl);
-        for(Node n:startPiece_nl){
+        for(Node n:middlePiece.getNodes()){
             n.setWay(middlePiece);
         }
         middlePiece.setOsm_id(nextPossibleWayId);
@@ -678,27 +692,12 @@ public class ExportTool {
         middlePiece.setIsObstacle(true);
 
         Way endPiece = new Way("", endPiece_nl);
-        for(Node n:startPiece_nl){
+        for(Node n:endPiece.getNodes()){
             n.setWay(endPiece);
         }
         endPiece.setOsm_id(nextPossibleWayId);
         nextPossibleWayId++;
         endPiece.setAdditionalTags(wayToBeRemoved.getTags());
-
-        // Save 2 Objects in OSM DB TODO Remove
-        /*
-        System.out.println("SAVE 2 STAIRS OBJECT IN OSM DB-------------------------------------------");
-        Obstacle second = cloneObstacle(ob);
-        second.setLongitudeEnd(0);
-        second.setLatitudeEnd(0);
-        second.setLongitudeStart(ob.getLongitudeEnd());
-        second.setLatitudeStart(ob.getLatitudeEnd());
-        Obstacle first = ob;
-        first.setLongitudeEnd(0);
-        first.setLatitudeEnd(0);
-        List<Obstacle> twoObstacles = new ArrayList<Obstacle>();
-        twoObstacles.add(first);
-        twoObstacles.add(second);*/
 
         // Save 3 Ways in OSM Database
         System.out.println("SAVE 3 WAY OBJECTS IN OSM DB-------------------------------------------");
@@ -810,7 +809,7 @@ public class ExportTool {
             insertInTableWays.close();
             insertInTableWay_nodes.close();
             insertInTableNodes.close();
-            //c.commit();
+            c.commit();
             System.out.println("UPDATE OSM DB COMPLETED");
         } catch (SQLException e){
             e.printStackTrace();
@@ -882,7 +881,6 @@ public class ExportTool {
         int version = -1;
         int userID = -1;
         long changesetID = -1;
-        // key 1629692805 already exists TODO
 
         for(Node n:w.getNodes()){
             if(nodeExistInOSMDB(n.getOsm_id()) || n.getOsm_id() == 0) continue;
@@ -1056,20 +1054,5 @@ public class ExportTool {
     public static void main(String[] args) {
         ExportTool eptool = ExportTool.getInstance();
         eptool.startExportProcess();
-        /*Connection c = PostgreSQLJDBC.getInstance().getConnection();
-        System.out.println("ExportTool.jar SUCCESSFUL EXECUTED");
-        PreparedStatement pstmt = null;
-        String sql_getSequenceId = "SELECT sequence_id FROM way_nodes WHERE way_id = ? AND node_id = ?;";
-        try {
-            pstmt = c.prepareStatement(sql_getSequenceId);
-            pstmt.setLong(1, 150032847);
-            pstmt.setLong(2, 1629692805);
-            ResultSet rs = pstmt.executeQuery();
-            System.out.println(rs.isBeforeFirst());
-            if(rs.next())
-                System.out.println(rs.getLong(1));
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }*/
     }
 }
