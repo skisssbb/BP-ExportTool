@@ -52,9 +52,25 @@ public class ExportTool {
     PreparedStatement pstmt_selectLatitudeFromNode = null;
     PreparedStatement pstmt_selectLongitudeFromNode = null;
     PreparedStatement pstmt_checkIfOSMIDExistInNode = null;
+    PreparedStatement updateNodes = null;
+    PreparedStatement updateWays = null;
+    PreparedStatement updateWay_Nodes = null;
+    PreparedStatement updateWay_Nodes2 = null;
+    PreparedStatement insertWay_Nodes = null;
+    PreparedStatement getSequenceId = null;
     String sql_selectLatitudeFromNode = "SELECT ST_Y(geom) AS latitude FROM nodes WHERE id = ?;";
     String sql_selectLongitudeFromNode = "SELECT ST_X(geom) AS longitude FROM nodes WHERE id = ?;";
     String sql_checkIfOSMIDExistInNode =  "SELECT id FROM nodes WHERE id = ?;";
+    String sql_updateNodes = "INSERT INTO nodes (id, version, user_id, tstamp, changeset_id, tags, geom) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ST_SetSRID(ST_MakePoint(?, ?), 4326));";
+    String sql_updateWays = "UPDATE ways SET nodes = ? WHERE id = ?;";
+    String sql_updateWay_Nodes = "UPDATE way_nodes SET sequence_id = (sequence_id + 1)*(-1) "+
+            "WHERE sequence_id >= ? AND way_id = ?;";
+    String sql_updateWay_Nodes2 = "UPDATE way_nodes SET sequence_id = sequence_id*(-1) "+
+            "WHERE (sequence_id)*(-1) >= ? AND way_id = ?;";
+    String sql_insertWay_Nodes ="INSERT INTO way_nodes (way_id, node_id, sequence_id) "
+            +"VALUES (?, ?, ?);";
+    String sql_getSequenceId = "SELECT sequence_id FROM way_nodes WHERE way_id = ? AND node_id = ?;";
 
     /*************************************************************************************
      *
@@ -91,6 +107,12 @@ public class ExportTool {
             pstmt_selectLatitudeFromNode = c.prepareStatement(sql_selectLatitudeFromNode);
             pstmt_selectLongitudeFromNode= c.prepareStatement(sql_selectLongitudeFromNode);
             pstmt_checkIfOSMIDExistInNode = c.prepareStatement(sql_checkIfOSMIDExistInNode);
+            updateNodes = c.prepareStatement(sql_updateNodes);
+            updateWays = c.prepareStatement(sql_updateWays);
+            updateWay_Nodes = c.prepareStatement(sql_updateWay_Nodes);
+            updateWay_Nodes2 = c.prepareStatement(sql_updateWay_Nodes2);
+            insertWay_Nodes = c.prepareStatement(sql_insertWay_Nodes);
+            getSequenceId = c.prepareStatement(sql_getSequenceId);
         } catch (SQLException e) {
             e.printStackTrace();
         }
@@ -243,41 +265,11 @@ public class ExportTool {
 
     private void writeOneNodeObstaclesInOsmDatabase(List<Obstacle> obstacleList) {
         try {
-            PreparedStatement updateNodes = null;
-            PreparedStatement updateWays = null;
-            PreparedStatement updateWay_Nodes = null;
-            PreparedStatement updateWay_Nodes2 = null;
-            PreparedStatement insertWay_Nodes = null;
-            PreparedStatement getSequenceId = null;
-
-            String sql_updateNodes = "INSERT INTO nodes (id, version, user_id, tstamp, changeset_id, tags, geom) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ST_SetSRID(ST_MakePoint(?, ?), 4326));";
-            String sql_updateWays = "UPDATE ways SET nodes = ? WHERE id = ?;";
-            String sql_updateWay_Nodes = "UPDATE way_nodes SET sequence_id = (sequence_id + 1)*(-1) "+
-                    "WHERE sequence_id >= ? AND way_id = ?;";
-            String sql_updateWay_Nodes2 = "UPDATE way_nodes SET sequence_id = sequence_id*(-1) "+
-                    "WHERE (sequence_id)*(-1) >= ? AND way_id = ?;";
-            String sql_insertWay_Nodes ="INSERT INTO way_nodes (way_id, node_id, sequence_id) "
-                    +"VALUES (?, ?, ?);";
-            String sql_getSequenceId = "SELECT sequence_id FROM way_nodes WHERE way_id = ? AND node_id = ?;";
-
-            updateNodes = c.prepareStatement(sql_updateNodes);
-            updateWays = c.prepareStatement(sql_updateWays);
-            updateWay_Nodes = c.prepareStatement(sql_updateWay_Nodes);
-            updateWay_Nodes2 = c.prepareStatement(sql_updateWay_Nodes2);
-            insertWay_Nodes = c.prepareStatement(sql_insertWay_Nodes);
-            getSequenceId = c.prepareStatement(sql_getSequenceId);
             for(Obstacle o:obstacleList){
                 insertObstacleInTableNode(o,updateNodes);
                 updateTableWays(o,updateWays);
                 updateTableWay_nodes(o,updateWay_Nodes, updateWay_Nodes2, insertWay_Nodes, getSequenceId);
             }
-            updateNodes.close();
-            updateWays.close();
-            updateWay_Nodes.close();
-            updateWay_Nodes2.close();
-            insertWay_Nodes.close();
-            getSequenceId.close();
             c.commit();
             System.out.println("UPDATE OSM DB COMPLETED");
         } catch (SQLException e){
@@ -881,8 +873,10 @@ public class ExportTool {
         int version = -1;
         int userID = -1;
         long changesetID = -1;
-
-        for(Node n:w.getNodes()){
+        List<Node> nodes = w.getNodes();
+        Node firstNode = nodes.get(0);
+        Node lastNode = nodes.get(nodes.size() -1 );
+        for(Node n:nodes){
             if(nodeExistInOSMDB(n.getOsm_id()) || n.getOsm_id() == 0) continue;
             try {
                 insertInTableNodes.setLong(1, n.getOsm_id());
@@ -897,7 +891,42 @@ public class ExportTool {
             } catch (SQLException e) {
                 e.printStackTrace();
             }
+            if(n == firstNode){
+                intergrateANodeTheRoadInOSMDB(w, n, "fisrt");
+            }
+            if(n == lastNode){
+                intergrateANodeTheRoadInOSMDB(w, n, "last");
+            }
         }
+    }
+
+    /**
+     * Insert a node in way and way_nodes table of OSM DB
+     * @param w the way this node is on
+     * @param n the node to be inserted
+     * @param order can only be "first" or "last", tells if this node is the starting one or the ending one
+     */
+    private void intergrateANodeTheRoadInOSMDB(Way w, Node n, String order) {
+        Obstacle o = new Stairs("",n.getLongitude(),n.getLatitude(),0,0,0,"");
+        if(order == "fisrt" && w.getOsmid_firstWay() != 0 && w.getOsmid_firstWayFirstNode() != 0 && w.getOsmid_firstWaySecondNode() != 0){
+            o.setOsm_id_start(n.getOsm_id());
+            o.setId_way(w.getOsmid_firstWay());
+            o.setId_firstnode(w.getOsmid_firstWayFirstNode());
+            o.setId_lastnode(w.getOsmid_firstWaySecondNode());
+        }
+        else if(order == "last" && w.getOsmid_secondWay() != 0 && w.getOsmid_secondWayFirstNode() != 0 && w.getOsmid_secondWaySecondNode() != 0){
+            o.setOsm_id_start(n.getOsm_id());
+            o.setId_way(w.getOsmid_secondWay());
+            o.setId_firstnode(w.getOsmid_secondWayFirstNode());
+            o.setId_lastnode(w.getOsmid_secondWaySecondNode());
+        }
+        else{
+            System.out.printf("Wrong Node given to function: intergrateANodeTheRoadInOSMDB");
+            return;
+        }
+
+        updateTableWays(o,updateWays);
+        updateTableWay_nodes(o,updateWay_Nodes, updateWay_Nodes2, insertWay_Nodes, getSequenceId);
     }
 
     private boolean nodeExistInOSMDB(long osm_id) {
@@ -1042,6 +1071,12 @@ public class ExportTool {
             pstmt_checkIfOSMIDExistInNode.close();
             pstmt_selectLongitudeFromNode.close();
             pstmt_selectLatitudeFromNode.close();
+            updateNodes.close();
+            updateWays.close();
+            updateWay_Nodes.close();
+            updateWay_Nodes2.close();
+            insertWay_Nodes.close();
+            getSequenceId.close();
             c.close();
             hibernate_con.close();
             DatabaseSessionManager.instance().getSessionFactory().close();
