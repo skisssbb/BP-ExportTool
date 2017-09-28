@@ -624,29 +624,20 @@ public class ExportTool {
                     n.setOsm_id(l);
                     tmpList.add(n);
 
+                    // StartPiece ends with the beginning of Stair
                     Node stairstartClone = new Node(ob.getLatitudeStart(), ob.getLongitudeStart());
                     stairstartClone.setOsm_id(ob.getOsm_id_start());
                     stairstartClone.setAdditionalTags(getHStoreValue(ob));
                     tmpList.add(stairstartClone);
 
-                    // StartPiece ends with the beginning of Stair
+                    // MiddlePiece begins with the beginning of Stair
                     stairStart = new Node(ob.getLatitudeStart(), ob.getLongitudeStart());
                     stairStart.setOsm_id(ob.getOsm_id_start());
                     stairStart.setAdditionalTags(getHStoreValue(ob));
                     middlePiece_nl.add(stairStart);
 
-                    stairEnd = new Node(ob.getLatitudeEnd(), ob.getLongitudeEnd());
-                    stairEnd.setOsm_id(ob.getOsm_id_end());
-                    stairEnd.setAdditionalTags(getHStoreValue(ob));
-                    middlePiece_nl.add(stairEnd);
-
-                    Node stairEndClone = new Node(ob.getLatitudeEnd(), ob.getLongitudeEnd());
-                    stairEndClone.setOsm_id(ob.getOsm_id_end());
-                    stairEndClone.setAdditionalTags(getHStoreValue(ob));
-                    endPiece_nl.add(stairEndClone);
-
                     toggle = false;
-                    tmpList = endPiece_nl;
+                    tmpList = middlePiece_nl;
                 }
                 else{
                     Node n = new Node(getLatitudeFromNode(l), getLongitudeFromNode(l));
@@ -656,11 +647,28 @@ public class ExportTool {
             }
             else{
                 if(l == ob.getId_lastnode()){
-                    toggle = true;
+                    // MiddlePiece ends with the end of Stairs
+                    stairEnd = new Node(ob.getLatitudeEnd(), ob.getLongitudeEnd());
+                    stairEnd.setOsm_id(ob.getOsm_id_end());
+                    stairEnd.setAdditionalTags(getHStoreValue(ob));
+                    middlePiece_nl.add(stairEnd);
+
+                    // EndPiece starts with the end of Stairs
+                    Node stairEndClone = new Node(ob.getLatitudeEnd(), ob.getLongitudeEnd());
+                    stairEndClone.setOsm_id(ob.getOsm_id_end());
+                    stairEndClone.setAdditionalTags(getHStoreValue(ob));
+                    endPiece_nl.add(stairEndClone);
+
+                    // And continued with lastNode
+                    Node n = new Node(getLatitudeFromNode(l), getLongitudeFromNode(l));
+                    n.setOsm_id(l);
+                    endPiece_nl.add(n);
+                    tmpList = endPiece_nl;
+                }
+                else{
                     Node n = new Node(getLatitudeFromNode(l), getLongitudeFromNode(l));
                     n.setOsm_id(l);
                     tmpList.add(n);
-                    continue;
                 }
             }
         }
@@ -681,7 +689,7 @@ public class ExportTool {
         middlePiece.setOsm_id(nextPossibleWayId);
         nextPossibleWayId++;
         middlePiece.setAdditionalTags(getHStoreValue(ob));
-        middlePiece.setIsObstacle(true);
+        middlePiece.isObstacle = true;
 
         Way endPiece = new Way("", endPiece_nl);
         for(Node n:endPiece.getNodes()){
