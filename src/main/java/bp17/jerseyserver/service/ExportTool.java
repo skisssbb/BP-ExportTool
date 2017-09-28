@@ -270,9 +270,9 @@ public class ExportTool {
                 updateTableWays(o,updateWays);
                 updateTableWay_nodes(o,updateWay_Nodes, updateWay_Nodes2, insertWay_Nodes, getSequenceId);
             }
-            //c.commit();
+            c.commit();
             System.out.println("UPDATE OSM DB COMPLETED");
-        } catch (/*SQL*/Exception e){
+        } catch (SQLException e){
             e.printStackTrace();
             try {
                 c.rollback();
@@ -727,15 +727,20 @@ public class ExportTool {
     private void updateNodeListOfObstacle(Obstacle ob, List<Node> middlePiece_nl) {
         Session session = null;
         Transaction tx = null;
+        List<Node> copyOfMiddlePiece = new ArrayList<>();
+        for(Node n:middlePiece_nl){
+            Node an = new Node(n.getLatitude(),n.getLongitude());
+            an.setObstacle(ob);
+            an.setOsm_id(n.getOsm_id());
+            an.setAlreadyExported(n.isAlreadyExported());
+            an.setAdditionalTags(n.getAdditionalTags());
+            copyOfMiddlePiece.add(an);
+        }
 
         try {
             session =  DatabaseSessionManager.instance().getSessionFactory().openSession();
             tx = session.beginTransaction();
-            ob.setNodes(middlePiece_nl);
-            for(Node n:middlePiece_nl){
-                n.setObstacle(ob);
-            }
-
+            ob.setNodes(copyOfMiddlePiece);
             session.saveOrUpdate(ob);
             tx.commit();
 
@@ -842,7 +847,7 @@ public class ExportTool {
             insertInTableWays.close();
             insertInTableWay_nodes.close();
             insertInTableNodes.close();
-            //c.commit();
+            c.commit();
             System.out.println("UPDATE OSM DB COMPLETED");
         } catch (SQLException e){
             e.printStackTrace();
