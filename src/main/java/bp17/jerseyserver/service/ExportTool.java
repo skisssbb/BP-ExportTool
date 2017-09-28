@@ -270,9 +270,9 @@ public class ExportTool {
                 updateTableWays(o,updateWays);
                 updateTableWay_nodes(o,updateWay_Nodes, updateWay_Nodes2, insertWay_Nodes, getSequenceId);
             }
-            c.commit();
+            //c.commit();
             System.out.println("UPDATE OSM DB COMPLETED");
-        } catch (SQLException e){
+        } catch (/*SQL*/Exception e){
             e.printStackTrace();
             try {
                 c.rollback();
@@ -707,11 +707,44 @@ public class ExportTool {
         threeways.add(endPiece);
         writeWaysInOsmDatabase(threeways);
 
+        // Update Node List from Obstacle in Hibernate DB
+        System.out.println("Updating Node List of Obstacle:"+ob+" in Hibernate DB.");
+        updateNodeListOfObstacle(ob,middlePiece_nl);
+
         // Save 3 Ways in Hibernate
         System.out.println("SAVE 3 WAY OBJECT IN HIBERNATE DB-------------------------------------------");
         for(Way w:threeways) postInTableWayHibernate(w);
         System.out.println("3 Ways have been posted to HibernateDB");
         updateAlredyExportedWayAndNode(threeways);
+    }
+
+    /**
+     * given a List of Nodes and an Obstacle
+     * update this Obstacle in Hibernate DB
+     * @param ob
+     * @param middlePiece_nl
+     */
+    private void updateNodeListOfObstacle(Obstacle ob, List<Node> middlePiece_nl) {
+        Session session = null;
+        Transaction tx = null;
+
+        try {
+            session =  DatabaseSessionManager.instance().getSessionFactory().openSession();
+            tx = session.beginTransaction();
+            ob.setNodes(middlePiece_nl);
+            for(Node n:middlePiece_nl){
+                n.setObstacle(ob);
+            }
+
+            session.saveOrUpdate(ob);
+            tx.commit();
+
+        }catch (Exception ex) {
+            ex.printStackTrace();
+            tx.rollback();
+        }
+        finally {session.close();}
+        System.out.println("All ways marked as exported in HibernateDB.");
     }
 
     /**
@@ -809,7 +842,7 @@ public class ExportTool {
             insertInTableWays.close();
             insertInTableWay_nodes.close();
             insertInTableNodes.close();
-            c.commit();
+            //c.commit();
             System.out.println("UPDATE OSM DB COMPLETED");
         } catch (SQLException e){
             e.printStackTrace();
